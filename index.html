@@ -1,0 +1,660 @@
+<!DOCTYPE html>
+<html lang="sr">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>TED Tracker</title>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/react/18.2.0/umd/react.production.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/react-dom/18.2.0/umd/react-dom.production.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/babel-standalone/7.23.5/babel.min.js"></script>
+<script src="https://alcdn.msauth.net/browser/3.7.1/js/msal-browser.min.js"></script>
+<style>
+  body { font-family: system-ui, -apple-system, sans-serif; margin: 0; background: #fafafa; color: #111827; }
+  .app { max-width: 900px; margin: 0 auto; padding: 16px; }
+  input, select, textarea { width: 100%; padding: 6px 8px; border: 1px solid #d1d5db; border-radius: 6px; font-size: 13px; box-sizing: border-box; font-family: inherit; }
+  button { cursor: pointer; font-family: inherit; }
+  label.chk { display: flex; align-items: center; gap: 8px; font-size: 13px; margin-bottom: 6px; cursor: pointer; }
+  .field { margin-bottom: 10px; }
+  .field-label { display: block; font-size: 12px; color: #6b7280; margin-bottom: 3px; }
+  .section-title { font-size: 13px; font-weight: 600; color: #374151; margin-bottom: 8px; text-transform: uppercase; letter-spacing: 0.3px; }
+  .card { padding: 10px 12px; border: 1px solid #e5e7eb; border-radius: 8px; margin-bottom: 6px; }
+  .tab-btn { display: flex; align-items: center; gap: 6px; padding: 6px 12px; border-radius: 8px; border: none; font-size: 13px; background: #f3f4f6; color: #374151; }
+  .tab-btn.active { background: #111827; color: #fff; }
+  .primary-btn { padding: 10px 18px; border-radius: 8px; border: none; background: #16a34a; color: #fff; font-size: 14px; font-weight: 500; }
+  .grid2 { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
+  @media (max-width: 640px) { .grid2 { grid-template-columns: 1fr; } .visit-cols { grid-template-columns: 1fr !important; } }
+</style>
+</head>
+<body>
+<div id="root"></div>
+<script type="text/babel" data-presets="react">
+
+const { useState, useEffect, useRef, useCallback } = React;
+const uid = () => Math.random().toString(36).slice(2, 10);
+const LS_KEY = "ted-tracker-data-v1";
+const LS_APIKEY = "ted-tracker-anthropic-key";
+const LS_CLIENTID = "ted-tracker-onedrive-clientid";
+const ONEDRIVE_FILE = "ted-tracker-data.json";
+const GRAPH_ROOT = "https://graph.microsoft.com/v1.0/me/drive/special/approot:/" + ONEDRIVE_FILE;
+
+const CAS_ITEMS = [
+  { key: "bolSpontani", label: "Spontani orbitalni bol" },
+  { key: "bolPokret", label: "Bol pri pokretu očiju" },
+  { key: "eritemKapaka", label: "Eritem kapaka" },
+  { key: "otokKapaka", label: "Otok kapaka" },
+  { key: "crvenilo", label: "Crvenilo konjunktive" },
+  { key: "hemoza", label: "Hemoza" },
+  { key: "otokKarunkule", label: "Otok karunkule/plike" },
+];
+const CAS_FOLLOWUP_ITEMS = [
+  { key: "porastProptoze", label: "Porast proptoze ≥2mm od prethodnog pregleda" },
+  { key: "padVida", label: "Pad vidne oštrine (intervalni)" },
+  { key: "smanjenjePokretljivosti", label: "Smanjenje pokretljivosti ≥5° (intervalni)" },
+];
+
+function emptyVisitDraft() {
+  return {
+    id: uid(), datum: new Date().toISOString().slice(0, 10), followup: false,
+    cas: Object.fromEntries([...CAS_ITEMS, ...CAS_FOLLOWUP_ITEMS].map(i => [i.key, false])),
+    hertelOD: "", hertelOS: "", hertelBaza: "",
+    mrd1OD: "", mrd1OS: "", mrd2OD: "", mrd2OS: "",
+    lagoftalmusOD: "", lagoftalmusOS: "",
+    gorman: "0", vaOD: "", vaOS: "", colorOD: "", colorOS: "",
+    rapdOD: false, rapdOS: false, vfDefektOD: false, vfDefektOS: false,
+    papilaOD: "normalna", papilaOS: "normalna", keratopatija: "0", napomena: "",
+  };
+}
+
+function computeCAS(v) {
+  const items = v.followup ? [...CAS_ITEMS, ...CAS_FOLLOWUP_ITEMS] : CAS_ITEMS;
+  return { score: items.reduce((s, i) => s + (v.cas[i.key] ? 1 : 0), 0), max: items.length };
+}
+
+function computeEUGOGO(v) {
+  const hertelDiff = Math.abs((parseFloat(v.hertelOD) || 0) - (parseFloat(v.hertelOS) || 0));
+  const maxHertel = Math.max(parseFloat(v.hertelOD) || 0, parseFloat(v.hertelOS) || 0);
+  const rapd = v.rapdOD || v.rapdOS;
+  const severeCornea = v.keratopatija === "3";
+  const gorman = parseInt(v.gorman, 10);
+  const { score: casScore } = computeCAS(v);
+  if (rapd || severeCornea) return { label: "Ugrožava vid", tone: "danger" };
+  if (hertelDiff >= 2 || maxHertel >= 21 || gorman >= 2 || casScore >= 4) return { label: "Umereno-teška", tone: "warning" };
+  return { label: "Blaga", tone: "success" };
+}
+
+function computeVISA(v) {
+  const gorman = parseInt(v.gorman, 10);
+  const { score: casScore } = computeCAS(v);
+  const rapd = v.rapdOD || v.rapdOS, vfDefekt = v.vfDefektOD || v.vfDefektOS;
+  const papilaAbn = v.papilaOD !== "normalna" || v.papilaOS !== "normalna";
+  let vScore = (rapd ? 2 : 0) + (vfDefekt ? 1 : 0) + (papilaAbn ? 1 : 0);
+  const hertelDiff = Math.abs((parseFloat(v.hertelOD) || 0) - (parseFloat(v.hertelOS) || 0));
+  const lag = (parseFloat(v.lagoftalmusOD) || 0) > 0 || (parseFloat(v.lagoftalmusOS) || 0) > 0;
+  let aScore = (hertelDiff >= 2 ? 1 : 0) + (hertelDiff >= 4 ? 1 : 0) + (lag ? 1 : 0);
+  const grade = (n, max) => n === 0 ? "0" : n <= max * 0.4 ? "blago" : n <= max * 0.7 ? "umereno" : "teško";
+  return { V: grade(vScore, 4), I: grade(casScore, 7), S: grade(gorman, 3), A: grade(aScore, 3) };
+}
+
+function toneColor(tone) {
+  if (tone === "danger") return { bg: "#fef2f2", border: "#fecaca", text: "#991b1b" };
+  if (tone === "warning") return { bg: "#fffbeb", border: "#fde68a", text: "#92400e" };
+  return { bg: "#f0fdf4", border: "#bbf7d0", text: "#166534" };
+}
+
+function Field({ label, children }) {
+  return <div className="field"><label className="field-label">{label}</label>{children}</div>;
+}
+
+function TrendSVG({ data }) {
+  if (data.length === 0) return <p style={{ color: "#9ca3af", fontSize: 13 }}>Nema podataka.</p>;
+  const w = 640, h = 260, pad = 36;
+  const casVals = data.map(d => d.CAS);
+  const hertelVals = data.flatMap(d => [d.hertelOD, d.hertelOS].filter(x => x !== null));
+  const maxY = Math.max(10, ...casVals, ...hertelVals) + 1;
+  const x = i => pad + (i * (w - 2 * pad)) / Math.max(1, data.length - 1);
+  const y = val => h - pad - (val / maxY) * (h - 2 * pad);
+  const line = (key) => data.map((d, i) => (d[key] === null || d[key] === undefined) ? null : `${x(i)},${y(d[key])}`).filter(Boolean).join(" ");
+  return (
+    <svg viewBox={`0 0 ${w} ${h}`} style={{ width: "100%", maxWidth: w }}>
+      <line x1={pad} y1={h - pad} x2={w - pad} y2={h - pad} stroke="#e5e7eb" />
+      <line x1={pad} y1={pad} x2={pad} y2={h - pad} stroke="#e5e7eb" />
+      <polyline points={line("CAS")} fill="none" stroke="#dc2626" strokeWidth="2" />
+      <polyline points={line("hertelOD")} fill="none" stroke="#2563eb" strokeWidth="2" />
+      <polyline points={line("hertelOS")} fill="none" stroke="#7c3aed" strokeWidth="2" />
+      {data.map((d, i) => <text key={i} x={x(i)} y={h - pad + 14} fontSize="9" textAnchor="middle" fill="#6b7280">{d.datum.slice(5)}</text>)}
+      <text x={pad} y={16} fontSize="11" fill="#dc2626">— CAS</text>
+      <text x={pad + 60} y={16} fontSize="11" fill="#2563eb">— Hertel OD</text>
+      <text x={pad + 150} y={16} fontSize="11" fill="#7c3aed">— Hertel OS</text>
+    </svg>
+  );
+}
+
+function PhotoMeasureTool({ onApply }) {
+  const [img, setImg] = useState(null);
+  const [points, setPoints] = useState([]);
+  const [refLength, setRefLength] = useState("10");
+  const [result, setResult] = useState(null);
+  const [targetField, setTargetField] = useState("hertelOD");
+  const canvasRef = useRef(null);
+  const imgElRef = useRef(null);
+
+  const fieldOptions = [
+    { v: "hertelOD", l: "Egzoftalmometrija OD (mm)" }, { v: "hertelOS", l: "Egzoftalmometrija OS (mm)" },
+    { v: "mrd1OD", l: "MRD1 OD (mm)" }, { v: "mrd1OS", l: "MRD1 OS (mm)" },
+    { v: "mrd2OD", l: "MRD2 OD (mm)" }, { v: "mrd2OS", l: "MRD2 OS (mm)" },
+    { v: "lagoftalmusOD", l: "Lagoftalmus OD (mm)" }, { v: "lagoftalmusOS", l: "Lagoftalmus OS (mm)" },
+  ];
+
+  const handleFile = (e) => {
+    const f = e.target.files[0];
+    if (!f) return;
+    const reader = new FileReader();
+    reader.onload = (ev) => { setImg(ev.target.result); setPoints([]); setResult(null); };
+    reader.readAsDataURL(f);
+  };
+
+  const draw = useCallback(() => {
+    const canvas = canvasRef.current, imageEl = imgElRef.current;
+    if (!canvas || !imageEl || !imageEl.complete || !imageEl.naturalWidth) return;
+    const ctx = canvas.getContext("2d");
+    canvas.width = imageEl.naturalWidth; canvas.height = imageEl.naturalHeight;
+    ctx.drawImage(imageEl, 0, 0);
+    ctx.lineWidth = Math.max(2, canvas.width / 300);
+    const colors = ["#16a34a", "#16a34a", "#2563eb", "#2563eb"];
+    points.forEach((p, i) => {
+      ctx.fillStyle = colors[i] || "#000";
+      ctx.beginPath(); ctx.arc(p.x, p.y, Math.max(4, canvas.width / 150), 0, Math.PI * 2); ctx.fill();
+    });
+    if (points.length >= 2) {
+      ctx.strokeStyle = colors[0]; ctx.beginPath();
+      ctx.moveTo(points[0].x, points[0].y); ctx.lineTo(points[1].x, points[1].y); ctx.stroke();
+    }
+    if (points.length >= 4) {
+      ctx.strokeStyle = colors[2]; ctx.beginPath();
+      ctx.moveTo(points[2].x, points[2].y); ctx.lineTo(points[3].x, points[3].y); ctx.stroke();
+    }
+  }, [points]);
+
+  useEffect(() => { draw(); }, [draw, img]);
+
+  const handleCanvasClick = (e) => {
+    const canvas = canvasRef.current, rect = canvas.getBoundingClientRect();
+    const scaleX = canvas.width / rect.width, scaleY = canvas.height / rect.height;
+    const x = (e.clientX - rect.left) * scaleX, y = (e.clientY - rect.top) * scaleY;
+    if (points.length >= 4) return;
+    setPoints([...points, { x, y }]);
+  };
+
+  const compute = () => {
+    if (points.length < 4) return;
+    const dist = (a, b) => Math.hypot(a.x - b.x, a.y - b.y);
+    const refPx = dist(points[0], points[1]), measPx = dist(points[2], points[3]);
+    setResult(measPx * ((parseFloat(refLength) || 1) / refPx));
+  };
+
+  return (
+    <div>
+      <p style={{ fontSize: 12, color: "#6b7280", marginBottom: 10, lineHeight: 1.5 }}>
+        Fotografišite oko sa referentnim predmetom poznate dužine u istoj ravni. Kliknite dve tačke na referenci (zeleno), zatim dve tačke koje merite (plavo).
+      </p>
+      <input type="file" accept="image/*" onChange={handleFile} style={{ marginBottom: 10 }} />
+      {img && <>
+        <img ref={imgElRef} src={img} alt="" style={{ display: "none" }} onLoad={draw} />
+        <div style={{ border: "1px solid #e5e7eb", borderRadius: 8, overflow: "hidden", marginBottom: 10 }}>
+          <canvas ref={canvasRef} onClick={handleCanvasClick} style={{ width: "100%", cursor: "crosshair", display: "block" }} />
+        </div>
+        <div style={{ display: "flex", gap: 10, alignItems: "flex-end", flexWrap: "wrap", marginBottom: 10 }}>
+          <div style={{ width: 100 }}><Field label="Ref. dužina (mm)"><input type="number" value={refLength} onChange={e => setRefLength(e.target.value)} /></Field></div>
+          <button onClick={() => { setPoints([]); setResult(null); }} style={{ padding: "6px 12px", borderRadius: 6, border: "1px solid #d1d5db", background: "#fff", fontSize: 12 }}>Resetuj tačke</button>
+          <button onClick={compute} disabled={points.length < 4} style={{ padding: "6px 12px", borderRadius: 6, border: "none", background: points.length < 4 ? "#e5e7eb" : "#2563eb", color: points.length < 4 ? "#9ca3af" : "#fff", fontSize: 12 }}>Izračunaj</button>
+        </div>
+        <p style={{ fontSize: 12, color: "#6b7280", marginBottom: 10 }}>Kliknuto: {points.length}/4</p>
+        {result !== null && (
+          <div style={{ background: "#eff6ff", border: "1px solid #bfdbfe", borderRadius: 8, padding: 12, display: "flex", gap: 12, flexWrap: "wrap", alignItems: "center" }}>
+            <span style={{ fontSize: 14, fontWeight: 600, color: "#1e40af" }}>Izmereno: {result.toFixed(2)} mm</span>
+            <select value={targetField} onChange={e => setTargetField(e.target.value)} style={{ width: "auto" }}>
+              {fieldOptions.map(f => <option key={f.v} value={f.v}>{f.l}</option>)}
+            </select>
+            <button onClick={() => onApply(targetField, result.toFixed(2))} style={{ padding: "6px 12px", borderRadius: 6, border: "none", background: "#16a34a", color: "#fff", fontSize: 12 }}>Unesi u aktivnu posetu</button>
+          </div>
+        )}
+      </>}
+    </div>
+  );
+}
+
+function LabPhotoTool({ onApply }) {
+  const [img, setImg] = useState(null), [imgBase64, setImgBase64] = useState(null);
+  const [loading, setLoading] = useState(false), [extracted, setExtracted] = useState(null), [error, setError] = useState(null);
+  const [apiKey, setApiKey] = useState(localStorage.getItem(LS_APIKEY) || "");
+
+  const saveKey = (val) => { setApiKey(val); localStorage.setItem(LS_APIKEY, val); };
+
+  const handleFile = (e) => {
+    const f = e.target.files[0];
+    if (!f) return;
+    const reader = new FileReader();
+    reader.onload = (ev) => { setImg(ev.target.result); setImgBase64(ev.target.result.split(",")[1]); setExtracted(null); setError(null); };
+    reader.readAsDataURL(f);
+  };
+
+  const extract = async () => {
+    if (!imgBase64) return;
+    if (!apiKey) { setError("Unesite Anthropic API ključ iznad pre čitanja nalaza."); return; }
+    setLoading(true); setError(null);
+    try {
+      const response = await fetch("https://api.anthropic.com/v1/messages", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          "x-api-key": apiKey,
+          "anthropic-version": "2023-06-01",
+          "anthropic-dangerous-direct-browser-access": "true",
+        },
+        body: JSON.stringify({
+          model: "claude-sonnet-4-6",
+          max_tokens: 1000,
+          messages: [{
+            role: "user",
+            content: [
+              { type: "image", source: { type: "base64", media_type: "image/jpeg", data: imgBase64 } },
+              { type: "text", text: "Ovo je fotografija laboratorijskog nalaza. Izvuci samo sledeće vrednosti ako su prisutne: TSH, FT4, FT3, TRAb, TPOAt (anti-TPO), TgAt (anti-Tg). Odgovori ISKLJUČIVO validnim JSON objektom bez dodatnog teksta: {\"TSH\":\"...\",\"FT4\":\"...\",\"FT3\":\"...\",\"TRAb\":\"...\",\"TPOAt\":\"...\",\"TgAt\":\"...\"}. Ako vrednost nije vidljiva, stavi null." }
+            ]
+          }]
+        })
+      });
+      const data = await response.json();
+      if (data.error) throw new Error(data.error.message || "API greška");
+      const textBlock = (data.content || []).find(b => b.type === "text");
+      if (!textBlock) throw new Error("Nema odgovora");
+      const parsed = JSON.parse(textBlock.text.replace(/```json|```/g, "").trim());
+      setExtracted(parsed);
+    } catch (err) {
+      setError("Nije uspelo čitanje: " + err.message + ". Unesite ručno.");
+    } finally { setLoading(false); }
+  };
+
+  return (
+    <div>
+      <div style={{ marginBottom: 12, padding: 10, background: "#fffbeb", border: "1px solid #fde68a", borderRadius: 8 }}>
+        <p style={{ fontSize: 12, color: "#92400e", marginBottom: 6 }}>Potreban je vaš lični Anthropic API ključ (console.anthropic.com). Čuva se samo lokalno u vašem browseru.</p>
+        <input type="password" placeholder="sk-ant-..." value={apiKey} onChange={e => saveKey(e.target.value)} />
+      </div>
+      <p style={{ fontSize: 12, color: "#6b7280", marginBottom: 10, lineHeight: 1.5 }}>Fotografišite lab nalaz. AI pokušava da pročita vrednosti — <strong>uvek proverite pre čuvanja.</strong></p>
+      <input type="file" accept="image/*" onChange={handleFile} style={{ marginBottom: 10 }} />
+      {img && <div style={{ marginBottom: 10 }}><img src={img} alt="nalaz" style={{ maxWidth: "100%", maxHeight: 260, borderRadius: 8, border: "1px solid #e5e7eb" }} /></div>}
+      {img && <button onClick={extract} disabled={loading} style={{ padding: "8px 14px", borderRadius: 6, border: "none", background: loading ? "#e5e7eb" : "#2563eb", color: loading ? "#9ca3af" : "#fff", fontSize: 13, marginBottom: 12 }}>{loading ? "Čitam..." : "Pročitaj nalaz (AI)"}</button>}
+      {error && <div style={{ background: "#fef2f2", border: "1px solid #fecaca", borderRadius: 8, padding: 10, fontSize: 12, color: "#991b1b", marginBottom: 10 }}>{error}</div>}
+      {extracted && (
+        <div style={{ background: "#f0fdf4", border: "1px solid #bbf7d0", borderRadius: 8, padding: 12 }}>
+          <p style={{ fontSize: 12, fontWeight: 600, color: "#166534", marginBottom: 8 }}>Pročitane vrednosti — proverite pre unosa:</p>
+          {Object.entries(extracted).map(([k, v]) => (
+            <div key={k} style={{ display: "flex", justifyContent: "space-between", fontSize: 13, padding: "3px 0", borderBottom: "1px solid #dcfce7" }}>
+              <span>{k}</span><span style={{ fontWeight: 500 }}>{v === null || v === "null" ? "—" : String(v)}</span>
+            </div>
+          ))}
+          <button onClick={() => onApply(extracted)} style={{ marginTop: 10, padding: "6px 12px", borderRadius: 6, border: "none", background: "#16a34a", color: "#fff", fontSize: 12 }}>Sačuvaj u karton pacijenta</button>
+        </div>
+      )}
+    </div>
+  );
+}
+
+function SettingsTab({ clientId, setClientId, account, onLogin, onLogout, syncStatus }) {
+  const [draft, setDraft] = useState(clientId);
+  return (
+    <div>
+      <div className="section-title">OneDrive sinhronizacija</div>
+      <p style={{ fontSize: 12, color: "#6b7280", marginBottom: 12, lineHeight: 1.5 }}>
+        Nalepite "Application (client) ID" dobijen registracijom aplikacije na portal.azure.com (App registrations).
+        Podaci se čuvaju u posebnom App Folder-u vašeg OneDrive naloga, u fajlu <code>{ONEDRIVE_FILE}</code>.
+      </p>
+      <Field label="Azure Client ID">
+        <input value={draft} onChange={e => setDraft(e.target.value)} placeholder="npr. 3f2c1a4b-..." />
+      </Field>
+      <button onClick={() => setClientId(draft)} style={{ padding: "6px 12px", borderRadius: 6, border: "1px solid #d1d5db", background: "#fff", fontSize: 12, marginRight: 8 }}>Sačuvaj Client ID</button>
+      {clientId && !account && (
+        <button onClick={onLogin} style={{ padding: "8px 14px", borderRadius: 6, border: "none", background: "#2563eb", color: "#fff", fontSize: 13 }}>Poveži OneDrive nalog</button>
+      )}
+      {account && (
+        <div style={{ display: "flex", alignItems: "center", gap: 10, marginTop: 8 }}>
+          <span style={{ fontSize: 13, color: "#166534" }}>Povezano: {account.username}</span>
+          <button onClick={onLogout} style={{ padding: "6px 12px", borderRadius: 6, border: "1px solid #d1d5db", background: "#fff", fontSize: 12 }}>Odjavi</button>
+        </div>
+      )}
+      {syncStatus && <p style={{ fontSize: 12, color: "#6b7280", marginTop: 10 }}>{syncStatus}</p>}
+      {!clientId && <p style={{ fontSize: 12, color: "#9ca3af", marginTop: 10 }}>Bez povezanog OneDrive naloga, podaci se čuvaju samo lokalno u ovom browseru.</p>}
+    </div>
+  );
+}
+
+function App() {
+  const [patients, setPatients] = useState([]);
+  const [visits, setVisits] = useState({});
+  const [labs, setLabs] = useState({});
+  const [selectedId, setSelectedId] = useState(null);
+  const [tab, setTab] = useState("patients");
+  const [visitDraft, setVisitDraft] = useState(emptyVisitDraft());
+  const [newPatient, setNewPatient] = useState({ ime: "", godine: "", mrn: "" });
+  const [loaded, setLoaded] = useState(false);
+  const [saveStatus, setSaveStatus] = useState("");
+
+  const [clientId, setClientIdState] = useState(localStorage.getItem(LS_CLIENTID) || "");
+  const [account, setAccount] = useState(null);
+  const [syncStatus, setSyncStatus] = useState("");
+  const msalRef = useRef(null);
+
+  const setClientId = (id) => { setClientIdState(id); localStorage.setItem(LS_CLIENTID, id); };
+
+  const getMsal = useCallback(() => {
+    if (!clientId) return null;
+    if (msalRef.current && msalRef.current._clientId === clientId) return msalRef.current;
+    const instance = new msal.PublicClientApplication({
+      auth: { clientId, authority: "https://login.microsoftonline.com/consumers", redirectUri: window.location.href },
+      cache: { cacheLocation: "localStorage" },
+    });
+    instance._clientId = clientId;
+    msalRef.current = instance;
+    return instance;
+  }, [clientId]);
+
+  const getToken = useCallback(async () => {
+    const instance = getMsal();
+    if (!instance) return null;
+    const accounts = instance.getAllAccounts();
+    if (accounts.length === 0) return null;
+    try {
+      const res = await instance.acquireTokenSilent({ scopes: ["Files.ReadWrite.AppFolder"], account: accounts[0] });
+      return res.accessToken;
+    } catch (e) {
+      const res = await instance.acquireTokenPopup({ scopes: ["Files.ReadWrite.AppFolder"] });
+      return res.accessToken;
+    }
+  }, [getMsal]);
+
+  const onLogin = async () => {
+    const instance = getMsal();
+    if (!instance) return;
+    try {
+      const res = await instance.loginPopup({ scopes: ["Files.ReadWrite.AppFolder"] });
+      setAccount(res.account);
+      setSyncStatus("Povezano — učitavam podatke sa OneDrive...");
+      await loadFromOneDrive();
+    } catch (e) {
+      setSyncStatus("Greška pri prijavi: " + e.message);
+    }
+  };
+  const onLogout = () => {
+    const instance = getMsal();
+    if (instance && account) instance.logoutPopup({ account });
+    setAccount(null);
+    setSyncStatus("Odjavljeno — podaci se dalje čuvaju samo lokalno.");
+  };
+
+  const loadFromOneDrive = useCallback(async () => {
+    try {
+      const token = await getToken();
+      if (!token) return;
+      const res = await fetch(GRAPH_ROOT + ":/content", { headers: { Authorization: "Bearer " + token } });
+      if (res.status === 404) { setSyncStatus("Nema još podataka na OneDrive — prvi upis će ih kreirati."); return; }
+      if (!res.ok) throw new Error("HTTP " + res.status);
+      const data = await res.json();
+      setPatients(data.patients || []); setVisits(data.visits || {}); setLabs(data.labs || {});
+      setSyncStatus("Učitano sa OneDrive.");
+    } catch (e) {
+      setSyncStatus("Greška pri učitavanju sa OneDrive: " + e.message);
+    }
+  }, [getToken]);
+
+  const saveToOneDrive = useCallback(async (payload) => {
+    try {
+      const token = await getToken();
+      if (!token) return;
+      const res = await fetch(GRAPH_ROOT + ":/content", {
+        method: "PUT",
+        headers: { Authorization: "Bearer " + token, "Content-Type": "application/json" },
+        body: JSON.stringify(payload),
+      });
+      if (!res.ok) throw new Error("HTTP " + res.status);
+      setSyncStatus("Sinhronizovano sa OneDrive.");
+    } catch (e) {
+      setSyncStatus("Greška pri čuvanju na OneDrive: " + e.message);
+    }
+  }, [getToken]);
+
+  useEffect(() => {
+    try {
+      const raw = localStorage.getItem(LS_KEY);
+      if (raw) { const parsed = JSON.parse(raw); setPatients(parsed.patients || []); setVisits(parsed.visits || {}); setLabs(parsed.labs || {}); }
+    } catch (e) {}
+    if (clientId) {
+      const instance = getMsal();
+      const accs = instance ? instance.getAllAccounts() : [];
+      if (accs.length > 0) { setAccount(accs[0]); loadFromOneDrive(); }
+    }
+    setLoaded(true);
+    // eslint-disable-next-line
+  }, []);
+
+  useEffect(() => {
+    if (!loaded) return;
+    const payload = { patients, visits, labs };
+    localStorage.setItem(LS_KEY, JSON.stringify(payload));
+    setSaveStatus("Sačuvano lokalno");
+    const t = setTimeout(() => setSaveStatus(""), 1200);
+    let t2;
+    if (account) t2 = setTimeout(() => saveToOneDrive(payload), 800);
+    return () => { clearTimeout(t); if (t2) clearTimeout(t2); };
+  }, [patients, visits, labs, loaded]);
+
+  const selectedPatient = patients.find(p => p.id === selectedId);
+  const patientVisits = (visits[selectedId] || []).slice().sort((a, b) => a.datum.localeCompare(b.datum));
+  const patientLabs = (labs[selectedId] || []).slice().sort((a, b) => b.datum.localeCompare(a.datum));
+
+  const addPatient = () => {
+    if (!newPatient.ime.trim()) return;
+    const p = { id: uid(), ...newPatient };
+    setPatients(prev => [...prev, p]); setNewPatient({ ime: "", godine: "", mrn: "" });
+    setSelectedId(p.id); setTab("visit");
+  };
+  const deletePatient = (id) => {
+    setPatients(prev => prev.filter(p => p.id !== id));
+    setVisits(prev => { const n = { ...prev }; delete n[id]; return n; });
+    setLabs(prev => { const n = { ...prev }; delete n[id]; return n; });
+    if (selectedId === id) setSelectedId(null);
+  };
+  const saveVisit = () => {
+    if (!selectedId) return;
+    setVisits(prev => ({ ...prev, [selectedId]: [...(prev[selectedId] || []), visitDraft] }));
+    setVisitDraft(emptyVisitDraft());
+  };
+  const applyMeasurement = (field, value) => setVisitDraft(prev => ({ ...prev, [field]: value }));
+  const applyLab = (extracted) => {
+    if (!selectedId) return;
+    setLabs(prev => ({ ...prev, [selectedId]: [...(prev[selectedId] || []), { id: uid(), datum: new Date().toISOString().slice(0, 10), ...extracted }] }));
+  };
+
+  const cas = computeCAS(visitDraft), eugogo = computeEUGOGO(visitDraft), visa = computeVISA(visitDraft);
+  const eugogoColors = toneColor(eugogo.tone);
+  const trendData = patientVisits.map(v => ({ datum: v.datum, CAS: computeCAS(v).score, hertelOD: parseFloat(v.hertelOD) || null, hertelOS: parseFloat(v.hertelOS) || null }));
+
+  const tabs = [
+    { k: "patients", l: "Pacijenti" }, { k: "visit", l: "Poseta" }, { k: "trend", l: "Trend" },
+    { k: "photo", l: "Merenje sa fotografije" }, { k: "lab", l: "Lab nalaz" }, { k: "settings", l: "Podešavanja" },
+  ];
+
+  return (
+    <div className="app">
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 16 }}>
+        <h2 style={{ fontSize: 20, fontWeight: 700, margin: 0 }}>TED Tracker</h2>
+        <span style={{ fontSize: 12, color: "#16a34a" }}>{saveStatus}</span>
+      </div>
+      <div style={{ display: "flex", gap: 6, marginBottom: 18, flexWrap: "wrap", borderBottom: "1px solid #e5e7eb", paddingBottom: 10 }}>
+        {tabs.map(t => (
+          <button key={t.k} className={"tab-btn" + (tab === t.k ? " active" : "")} disabled={t.k !== "patients" && t.k !== "settings" && !selectedId} onClick={() => setTab(t.k)}>{t.l}</button>
+        ))}
+      </div>
+      {selectedPatient && tab !== "patients" && tab !== "settings" && (
+        <div style={{ marginBottom: 16, padding: "8px 12px", background: "#f9fafb", borderRadius: 8, fontSize: 13 }}>
+          Pacijent: <strong>{selectedPatient.ime}</strong>{selectedPatient.godine ? `, ${selectedPatient.godine} god.` : ""}{selectedPatient.mrn ? ` — ${selectedPatient.mrn}` : ""}
+        </div>
+      )}
+
+      {tab === "settings" && (
+        <SettingsTab clientId={clientId} setClientId={setClientId} account={account} onLogin={onLogin} onLogout={onLogout} syncStatus={syncStatus} />
+      )}
+
+      {tab === "patients" && (
+        <div>
+          <div style={{ display: "flex", gap: 8, marginBottom: 16, flexWrap: "wrap", alignItems: "flex-end" }}>
+            <div style={{ width: 200 }}><Field label="Ime i prezime"><input value={newPatient.ime} onChange={e => setNewPatient({ ...newPatient, ime: e.target.value })} /></Field></div>
+            <div style={{ width: 80 }}><Field label="Godine"><input type="number" value={newPatient.godine} onChange={e => setNewPatient({ ...newPatient, godine: e.target.value })} /></Field></div>
+            <div style={{ width: 140 }}><Field label="Broj kartona"><input value={newPatient.mrn} onChange={e => setNewPatient({ ...newPatient, mrn: e.target.value })} /></Field></div>
+            <button onClick={addPatient} style={{ padding: "8px 14px", borderRadius: 6, border: "none", background: "#111827", color: "#fff", fontSize: 13, height: 34 }}>+ Dodaj pacijenta</button>
+          </div>
+          {patients.length === 0 && <p style={{ color: "#9ca3af", fontSize: 13 }}>Nema unetih pacijenata.</p>}
+          {patients.map(p => {
+            const pv = visits[p.id] || [];
+            const last = pv.slice().sort((a, b) => b.datum.localeCompare(a.datum))[0];
+            return (
+              <div key={p.id} className="card" style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+                <div style={{ cursor: "pointer", flex: 1 }} onClick={() => { setSelectedId(p.id); setTab("visit"); }}>
+                  <div style={{ fontSize: 14, fontWeight: 500 }}>{p.ime}</div>
+                  <div style={{ fontSize: 12, color: "#6b7280" }}>{p.godine ? `${p.godine} god.` : ""}{p.mrn ? ` · ${p.mrn}` : ""} · {pv.length} poseta{last ? ` · poslednja ${last.datum}` : ""}</div>
+                </div>
+                <button onClick={() => deletePatient(p.id)} style={{ border: "none", background: "none", color: "#ef4444", padding: 6, fontSize: 16 }}>×</button>
+              </div>
+            );
+          })}
+        </div>
+      )}
+
+      {tab === "visit" && selectedPatient && (
+        <div>
+          <div className="grid2 visit-cols">
+            <div>
+              <div className="section-title">Osnovno</div>
+              <Field label="Datum pregleda"><input type="date" value={visitDraft.datum} onChange={e => setVisitDraft({ ...visitDraft, datum: e.target.value })} /></Field>
+              <Field label="Tip posete">
+                <select value={visitDraft.followup ? "1" : "0"} onChange={e => setVisitDraft({ ...visitDraft, followup: e.target.value === "1" })}>
+                  <option value="0">Baseline (inicijalni pregled)</option><option value="1">Follow-up (kontrolni pregled)</option>
+                </select>
+              </Field>
+              <div className="section-title" style={{ marginTop: 16 }}>Inflamatorni znaci (CAS)</div>
+              {CAS_ITEMS.map(i => (
+                <label key={i.key} className="chk"><input type="checkbox" checked={visitDraft.cas[i.key]} onChange={e => setVisitDraft({ ...visitDraft, cas: { ...visitDraft.cas, [i.key]: e.target.checked } })} />{i.label}</label>
+              ))}
+              {visitDraft.followup && CAS_FOLLOWUP_ITEMS.map(i => (
+                <label key={i.key} className="chk"><input type="checkbox" checked={visitDraft.cas[i.key]} onChange={e => setVisitDraft({ ...visitDraft, cas: { ...visitDraft.cas, [i.key]: e.target.checked } })} />{i.label}</label>
+              ))}
+              <div className="section-title" style={{ marginTop: 16 }}>Izgled</div>
+              <div className="grid2">
+                <Field label="Hertel OD (mm)"><input value={visitDraft.hertelOD} onChange={e => setVisitDraft({ ...visitDraft, hertelOD: e.target.value })} /></Field>
+                <Field label="Hertel OS (mm)"><input value={visitDraft.hertelOS} onChange={e => setVisitDraft({ ...visitDraft, hertelOS: e.target.value })} /></Field>
+                <Field label="Baza merenja"><input value={visitDraft.hertelBaza} onChange={e => setVisitDraft({ ...visitDraft, hertelBaza: e.target.value })} /></Field>
+                <div />
+                <Field label="MRD1 OD"><input value={visitDraft.mrd1OD} onChange={e => setVisitDraft({ ...visitDraft, mrd1OD: e.target.value })} /></Field>
+                <Field label="MRD1 OS"><input value={visitDraft.mrd1OS} onChange={e => setVisitDraft({ ...visitDraft, mrd1OS: e.target.value })} /></Field>
+                <Field label="MRD2 OD"><input value={visitDraft.mrd2OD} onChange={e => setVisitDraft({ ...visitDraft, mrd2OD: e.target.value })} /></Field>
+                <Field label="MRD2 OS"><input value={visitDraft.mrd2OS} onChange={e => setVisitDraft({ ...visitDraft, mrd2OS: e.target.value })} /></Field>
+                <Field label="Lagoftalmus OD"><input value={visitDraft.lagoftalmusOD} onChange={e => setVisitDraft({ ...visitDraft, lagoftalmusOD: e.target.value })} /></Field>
+                <Field label="Lagoftalmus OS"><input value={visitDraft.lagoftalmusOS} onChange={e => setVisitDraft({ ...visitDraft, lagoftalmusOS: e.target.value })} /></Field>
+              </div>
+            </div>
+            <div>
+              <div className="section-title">Strabizam / diplopija</div>
+              <Field label="Gormanov skor">
+                <select value={visitDraft.gorman} onChange={e => setVisitDraft({ ...visitDraft, gorman: e.target.value })}>
+                  <option value="0">0 — nema diplopije</option><option value="1">1 — intermitentna</option><option value="2">2 — inkonstantna</option><option value="3">3 — konstantna</option>
+                </select>
+              </Field>
+              <div className="section-title" style={{ marginTop: 16 }}>Vid / DON</div>
+              <div className="grid2">
+                <Field label="VA OD"><input value={visitDraft.vaOD} onChange={e => setVisitDraft({ ...visitDraft, vaOD: e.target.value })} /></Field>
+                <Field label="VA OS"><input value={visitDraft.vaOS} onChange={e => setVisitDraft({ ...visitDraft, vaOS: e.target.value })} /></Field>
+                <Field label="Kolorni vid OD"><input value={visitDraft.colorOD} onChange={e => setVisitDraft({ ...visitDraft, colorOD: e.target.value })} /></Field>
+                <Field label="Kolorni vid OS"><input value={visitDraft.colorOS} onChange={e => setVisitDraft({ ...visitDraft, colorOS: e.target.value })} /></Field>
+              </div>
+              <label className="chk"><input type="checkbox" checked={visitDraft.rapdOD} onChange={e => setVisitDraft({ ...visitDraft, rapdOD: e.target.checked })} />RAPD prisutan OD</label>
+              <label className="chk"><input type="checkbox" checked={visitDraft.rapdOS} onChange={e => setVisitDraft({ ...visitDraft, rapdOS: e.target.checked })} />RAPD prisutan OS</label>
+              <label className="chk"><input type="checkbox" checked={visitDraft.vfDefektOD} onChange={e => setVisitDraft({ ...visitDraft, vfDefektOD: e.target.checked })} />Defekt vidnog polja OD</label>
+              <label className="chk"><input type="checkbox" checked={visitDraft.vfDefektOS} onChange={e => setVisitDraft({ ...visitDraft, vfDefektOS: e.target.checked })} />Defekt vidnog polja OS</label>
+              <div className="grid2" style={{ marginTop: 8 }}>
+                <Field label="Papila OD">
+                  <select value={visitDraft.papilaOD} onChange={e => setVisitDraft({ ...visitDraft, papilaOD: e.target.value })}>
+                    <option value="normalna">Normalna</option><option value="bleda">Bleda</option><option value="edematozna">Edematozna</option>
+                  </select>
+                </Field>
+                <Field label="Papila OS">
+                  <select value={visitDraft.papilaOS} onChange={e => setVisitDraft({ ...visitDraft, papilaOS: e.target.value })}>
+                    <option value="normalna">Normalna</option><option value="bleda">Bleda</option><option value="edematozna">Edematozna</option>
+                  </select>
+                </Field>
+              </div>
+              <div className="section-title" style={{ marginTop: 16 }}>Rožnjača</div>
+              <Field label="Ekspoziciona keratopatija">
+                <select value={visitDraft.keratopatija} onChange={e => setVisitDraft({ ...visitDraft, keratopatija: e.target.value })}>
+                  <option value="0">0 — nema</option><option value="1">1 — blaga</option><option value="2">2 — umerena</option><option value="3">3 — teška</option>
+                </select>
+              </Field>
+              <div className="section-title" style={{ marginTop: 16 }}>Napomena</div>
+              <textarea style={{ minHeight: 60 }} value={visitDraft.napomena} onChange={e => setVisitDraft({ ...visitDraft, napomena: e.target.value })} />
+            </div>
+          </div>
+
+          <div style={{ marginTop: 8, padding: 14, background: "#f9fafb", borderRadius: 10, display: "flex", gap: 16, flexWrap: "wrap" }}>
+            <div><div style={{ fontSize: 11, color: "#6b7280" }}>CAS</div><div style={{ fontSize: 20, fontWeight: 700 }}>{cas.score}/{cas.max}</div></div>
+            <div style={{ padding: "6px 12px", borderRadius: 8, background: eugogoColors.bg, border: `1px solid ${eugogoColors.border}` }}>
+              <div style={{ fontSize: 11, color: eugogoColors.text }}>EUGOGO težina</div>
+              <div style={{ fontSize: 14, fontWeight: 600, color: eugogoColors.text }}>{eugogo.label}</div>
+            </div>
+            <div><div style={{ fontSize: 11, color: "#6b7280" }}>VISA</div><div style={{ fontSize: 13 }}>V:{visa.V} I:{visa.I} S:{visa.S} A:{visa.A}</div></div>
+          </div>
+          <p style={{ fontSize: 11, color: "#9ca3af", marginTop: 6 }}>Pojednostavljen izračun za praćenje trenda — ne zamenjuje zvanične ITEDS/EUGOGO formulare i klinički sud.</p>
+          <button className="primary-btn" onClick={saveVisit} style={{ marginTop: 14 }}>Sačuvaj posetu</button>
+
+          {patientVisits.length > 0 && (
+            <div style={{ marginTop: 24 }}>
+              <div className="section-title">Istorija poseta</div>
+              {patientVisits.slice().reverse().map(v => {
+                const c = computeCAS(v), e = computeEUGOGO(v), ec = toneColor(e.tone);
+                return (
+                  <div key={v.id} className="card" style={{ display: "flex", justifyContent: "space-between" }}>
+                    <span>{v.datum} {v.followup ? "(follow-up)" : "(baseline)"}</span>
+                    <span>CAS {c.score}/{c.max} · <span style={{ color: ec.text }}>{e.label}</span></span>
+                  </div>
+                );
+              })}
+            </div>
+          )}
+        </div>
+      )}
+
+      {tab === "trend" && selectedPatient && <TrendSVG data={trendData} />}
+      {tab === "photo" && selectedPatient && <PhotoMeasureTool onApply={applyMeasurement} />}
+      {tab === "lab" && selectedPatient && (
+        <div>
+          <LabPhotoTool onApply={applyLab} />
+          {patientLabs.length > 0 && (
+            <div style={{ marginTop: 20 }}>
+              <div className="section-title">Istorija lab nalaza</div>
+              {patientLabs.map(l => (
+                <div key={l.id} className="card" style={{ fontSize: 12 }}>
+                  <div style={{ fontWeight: 500, marginBottom: 4 }}>{l.datum}</div>
+                  <div style={{ display: "flex", gap: 12, flexWrap: "wrap" }}>
+                    {["TSH", "FT4", "FT3", "TRAb", "TPOAt", "TgAt"].map(k => l[k] && l[k] !== "null" ? <span key={k}>{k}: {l[k]}</span> : null)}
+                  </div>
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
+ReactDOM.createRoot(document.getElementById("root")).render(<App />);
+</script>
+</body>
+</html>
