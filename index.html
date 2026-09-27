@@ -2,8 +2,13 @@
 <html lang="sr">
 <head>
 <meta charset="UTF-8" />
-<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0" />
 <title>TED Tracker</title>
+<meta name="apple-mobile-web-app-capable" content="yes" />
+<meta name="apple-mobile-web-app-status-bar-style" content="black" />
+<meta name="apple-mobile-web-app-title" content="TED Tracker" />
+<meta name="mobile-web-app-capable" content="yes" />
+<link rel="manifest" href="data:application/manifest+json,%7B%22name%22%3A%22TED%20Tracker%22%2C%22short_name%22%3A%22TED%22%2C%22display%22%3A%22standalone%22%2C%22start_url%22%3A%22.%22%2C%22background_color%22%3A%22%23fafafa%22%2C%22theme_color%22%3A%22%23111827%22%7D" />
 <script src="https://cdnjs.cloudflare.com/ajax/libs/react/18.2.0/umd/react.production.min.js"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/react-dom/18.2.0/umd/react-dom.production.min.js"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/babel-standalone/7.23.5/babel.min.js"></script>
@@ -49,7 +54,7 @@ const CAS_ITEMS = [
 const CAS_FOLLOWUP_ITEMS = [
   { key: "porastProptoze", label: "Porast proptoze ≥2mm od prethodnog pregleda" },
   { key: "padVida", label: "Pad vidne oštrine (intervalni)" },
-  { key: "smanjenjePokretljivosti", label: "Smanjenje pokretljivosti ≥5° (intervalni)" },
+  { key: "smanjenjePokretljivosti", label: "Smanjenje pokretljivosti ≥5° (intervalni, procena dukcija ili luk/sinoptofor)" },
 ];
 
 function emptyVisitDraft() {
@@ -58,7 +63,7 @@ function emptyVisitDraft() {
     cas: Object.fromEntries([...CAS_ITEMS, ...CAS_FOLLOWUP_ITEMS].map(i => [i.key, false])),
     hertelOD: "", hertelOS: "", hertelBaza: "",
     mrd1OD: "", mrd1OS: "", mrd2OD: "", mrd2OS: "",
-    lagoftalmusOD: "", lagoftalmusOS: "",
+    lagoftalmusOD: "", lagoftalmusOS: "", fisuraOD: "", fisuraOS: "",
     gorman: "0", vaOD: "", vaOS: "", colorOD: "", colorOS: "",
     rapdOD: false, rapdOS: false, vfDefektOD: false, vfDefektOS: false,
     papilaOD: "normalna", papilaOS: "normalna", keratopatija: "0", napomena: "",
@@ -69,7 +74,6 @@ function computeCAS(v) {
   const items = v.followup ? [...CAS_ITEMS, ...CAS_FOLLOWUP_ITEMS] : CAS_ITEMS;
   return { score: items.reduce((s, i) => s + (v.cas[i.key] ? 1 : 0), 0), max: items.length };
 }
-
 function computeEUGOGO(v) {
   const hertelDiff = Math.abs((parseFloat(v.hertelOD) || 0) - (parseFloat(v.hertelOS) || 0));
   const maxHertel = Math.max(parseFloat(v.hertelOD) || 0, parseFloat(v.hertelOS) || 0);
@@ -81,7 +85,6 @@ function computeEUGOGO(v) {
   if (hertelDiff >= 2 || maxHertel >= 21 || gorman >= 2 || casScore >= 4) return { label: "Umereno-teška", tone: "warning" };
   return { label: "Blaga", tone: "success" };
 }
-
 function computeVISA(v) {
   const gorman = parseInt(v.gorman, 10);
   const { score: casScore } = computeCAS(v);
@@ -94,17 +97,14 @@ function computeVISA(v) {
   const grade = (n, max) => n === 0 ? "0" : n <= max * 0.4 ? "blago" : n <= max * 0.7 ? "umereno" : "teško";
   return { V: grade(vScore, 4), I: grade(casScore, 7), S: grade(gorman, 3), A: grade(aScore, 3) };
 }
-
 function toneColor(tone) {
   if (tone === "danger") return { bg: "#fef2f2", border: "#fecaca", text: "#991b1b" };
   if (tone === "warning") return { bg: "#fffbeb", border: "#fde68a", text: "#92400e" };
   return { bg: "#f0fdf4", border: "#bbf7d0", text: "#166534" };
 }
-
 function Field({ label, children }) {
   return <div className="field"><label className="field-label">{label}</label>{children}</div>;
 }
-
 function TrendSVG({ data }) {
   if (data.length === 0) return <p style={{ color: "#9ca3af", fontSize: 13 }}>Nema podataka.</p>;
   const w = 640, h = 260, pad = 36;
@@ -137,22 +137,19 @@ function PhotoMeasureTool({ onApply }) {
   const [targetField, setTargetField] = useState("hertelOD");
   const canvasRef = useRef(null);
   const imgElRef = useRef(null);
-
   const fieldOptions = [
     { v: "hertelOD", l: "Egzoftalmometrija OD (mm)" }, { v: "hertelOS", l: "Egzoftalmometrija OS (mm)" },
     { v: "mrd1OD", l: "MRD1 OD (mm)" }, { v: "mrd1OS", l: "MRD1 OS (mm)" },
     { v: "mrd2OD", l: "MRD2 OD (mm)" }, { v: "mrd2OS", l: "MRD2 OS (mm)" },
     { v: "lagoftalmusOD", l: "Lagoftalmus OD (mm)" }, { v: "lagoftalmusOS", l: "Lagoftalmus OS (mm)" },
+    { v: "fisuraOD", l: "Palpebralna fisura OD (mm)" }, { v: "fisuraOS", l: "Palpebralna fisura OS (mm)" },
   ];
-
   const handleFile = (e) => {
-    const f = e.target.files[0];
-    if (!f) return;
+    const f = e.target.files[0]; if (!f) return;
     const reader = new FileReader();
     reader.onload = (ev) => { setImg(ev.target.result); setPoints([]); setResult(null); };
     reader.readAsDataURL(f);
   };
-
   const draw = useCallback(() => {
     const canvas = canvasRef.current, imageEl = imgElRef.current;
     if (!canvas || !imageEl || !imageEl.complete || !imageEl.naturalWidth) return;
@@ -161,22 +158,11 @@ function PhotoMeasureTool({ onApply }) {
     ctx.drawImage(imageEl, 0, 0);
     ctx.lineWidth = Math.max(2, canvas.width / 300);
     const colors = ["#16a34a", "#16a34a", "#2563eb", "#2563eb"];
-    points.forEach((p, i) => {
-      ctx.fillStyle = colors[i] || "#000";
-      ctx.beginPath(); ctx.arc(p.x, p.y, Math.max(4, canvas.width / 150), 0, Math.PI * 2); ctx.fill();
-    });
-    if (points.length >= 2) {
-      ctx.strokeStyle = colors[0]; ctx.beginPath();
-      ctx.moveTo(points[0].x, points[0].y); ctx.lineTo(points[1].x, points[1].y); ctx.stroke();
-    }
-    if (points.length >= 4) {
-      ctx.strokeStyle = colors[2]; ctx.beginPath();
-      ctx.moveTo(points[2].x, points[2].y); ctx.lineTo(points[3].x, points[3].y); ctx.stroke();
-    }
+    points.forEach((p, i) => { ctx.fillStyle = colors[i] || "#000"; ctx.beginPath(); ctx.arc(p.x, p.y, Math.max(4, canvas.width / 150), 0, Math.PI * 2); ctx.fill(); });
+    if (points.length >= 2) { ctx.strokeStyle = colors[0]; ctx.beginPath(); ctx.moveTo(points[0].x, points[0].y); ctx.lineTo(points[1].x, points[1].y); ctx.stroke(); }
+    if (points.length >= 4) { ctx.strokeStyle = colors[2]; ctx.beginPath(); ctx.moveTo(points[2].x, points[2].y); ctx.lineTo(points[3].x, points[3].y); ctx.stroke(); }
   }, [points]);
-
   useEffect(() => { draw(); }, [draw, img]);
-
   const handleCanvasClick = (e) => {
     const canvas = canvasRef.current, rect = canvas.getBoundingClientRect();
     const scaleX = canvas.width / rect.width, scaleY = canvas.height / rect.height;
@@ -184,18 +170,16 @@ function PhotoMeasureTool({ onApply }) {
     if (points.length >= 4) return;
     setPoints([...points, { x, y }]);
   };
-
   const compute = () => {
     if (points.length < 4) return;
     const dist = (a, b) => Math.hypot(a.x - b.x, a.y - b.y);
     const refPx = dist(points[0], points[1]), measPx = dist(points[2], points[3]);
     setResult(measPx * ((parseFloat(refLength) || 1) / refPx));
   };
-
   return (
     <div>
       <p style={{ fontSize: 12, color: "#6b7280", marginBottom: 10, lineHeight: 1.5 }}>
-        Fotografišite oko sa referentnim predmetom poznate dužine u istoj ravni. Kliknite dve tačke na referenci (zeleno), zatim dve tačke koje merite (plavo).
+        Ručno kalibrisano merenje: kliknite dve tačke na referenci poznate dužine (zeleno), zatim dve tačke koje merite (plavo).
       </p>
       <input type="file" accept="image/*" onChange={handleFile} style={{ marginBottom: 10 }} />
       {img && <>
@@ -223,21 +207,267 @@ function PhotoMeasureTool({ onApply }) {
   );
 }
 
+// ---- Auto-merenje: AI čita oznake na lenjiru + MediaPipe automatski nalazi anatomiju oka ----
+const EYE_LM = {
+  A: { upper: 159, lower: 145, iris: 468, inner: 133, outer: 33 },
+  B: { upper: 386, lower: 374, iris: 473, inner: 362, outer: 263 },
+};
+
+function AutoMeasureTool({ onApply }) {
+  const [apiKey, setApiKey] = useState(localStorage.getItem(LS_APIKEY) || "");
+  const [img, setImg] = useState(null);
+  const [imgBase64, setImgBase64] = useState(null);
+  const [rulerLabels, setRulerLabels] = useState(null);
+  const [rulerLoading, setRulerLoading] = useState(false);
+  const [rulerError, setRulerError] = useState(null);
+  const [calibPoints, setCalibPoints] = useState([]); // 2 points on ruler
+  const [calibLabels, setCalibLabels] = useState([null, null]); // chosen label per point
+  const [mmPerPx, setMmPerPx] = useState(null);
+  const [faceLoading, setFaceLoading] = useState(false);
+  const [faceError, setFaceError] = useState(null);
+  const [landmarks, setLandmarks] = useState(null); // raw pixel-space landmarks for eye A/B
+  const [assign, setAssign] = useState({ A: "OD", B: "OS" });
+  const [results, setResults] = useState(null);
+  const [clickMode, setClickMode] = useState("calib"); // calib clicks only; anatomy is automatic
+
+  const canvasRef = useRef(null);
+  const imgElRef = useRef(null);
+  const faceLandmarkerRef = useRef(null);
+
+  const saveKey = (v) => { setApiKey(v); localStorage.setItem(LS_APIKEY, v); };
+
+  const handleFile = (e) => {
+    const f = e.target.files[0]; if (!f) return;
+    const reader = new FileReader();
+    reader.onload = (ev) => {
+      setImg(ev.target.result); setImgBase64(ev.target.result.split(",")[1]);
+      setRulerLabels(null); setCalibPoints([]); setCalibLabels([null, null]); setMmPerPx(null);
+      setLandmarks(null); setResults(null); setRulerError(null); setFaceError(null);
+    };
+    reader.readAsDataURL(f);
+  };
+
+  const readRuler = async () => {
+    if (!imgBase64) return;
+    if (!apiKey) { setRulerError("Unesite Anthropic API ključ."); return; }
+    setRulerLoading(true); setRulerError(null);
+    try {
+      const response = await fetch("https://api.anthropic.com/v1/messages", {
+        method: "POST",
+        headers: { "Content-Type": "application/json", "x-api-key": apiKey, "anthropic-version": "2023-06-01", "anthropic-dangerous-direct-browser-access": "true" },
+        body: JSON.stringify({
+          model: "claude-sonnet-4-6", max_tokens: 500,
+          messages: [{ role: "user", content: [
+            { type: "image", source: { type: "base64", media_type: "image/jpeg", data: imgBase64 } },
+            { type: "text", text: "Na fotografiji je lenjir ili merna traka pored oka pacijenta. Navedi SVE brojčane oznake koje su vidljive na lenjiru, po redu, sa jedinicom (cm ili mm). Odgovori ISKLJUČIVO JSON nizom, npr: [{\"label\":\"0\",\"unit\":\"cm\"},{\"label\":\"1\",\"unit\":\"cm\"},{\"label\":\"2\",\"unit\":\"cm\"}]. Bez ikakvog drugog teksta." }
+          ] }]
+        })
+      });
+      const data = await response.json();
+      if (data.error) throw new Error(data.error.message);
+      const textBlock = (data.content || []).find(b => b.type === "text");
+      const parsed = JSON.parse(textBlock.text.replace(/```json|```/g, "").trim());
+      setRulerLabels(parsed);
+    } catch (err) {
+      setRulerError("AI nije uspeo da pročita lenjir: " + err.message + ". Možete i ručno da unesete dve vrednosti niže.");
+    } finally { setRulerLoading(false); }
+  };
+
+  const draw = useCallback(() => {
+    const canvas = canvasRef.current, imageEl = imgElRef.current;
+    if (!canvas || !imageEl || !imageEl.complete || !imageEl.naturalWidth) return;
+    const ctx = canvas.getContext("2d");
+    canvas.width = imageEl.naturalWidth; canvas.height = imageEl.naturalHeight;
+    ctx.drawImage(imageEl, 0, 0);
+    const r = Math.max(4, canvas.width / 150);
+    ctx.lineWidth = Math.max(2, canvas.width / 300);
+    calibPoints.forEach((p) => { ctx.fillStyle = "#16a34a"; ctx.beginPath(); ctx.arc(p.x, p.y, r, 0, Math.PI * 2); ctx.fill(); });
+    if (calibPoints.length === 2) { ctx.strokeStyle = "#16a34a"; ctx.beginPath(); ctx.moveTo(calibPoints[0].x, calibPoints[0].y); ctx.lineTo(calibPoints[1].x, calibPoints[1].y); ctx.stroke(); }
+    if (landmarks) {
+      ["A", "B"].forEach((key) => {
+        const lm = landmarks[key];
+        if (!lm) return;
+        ctx.fillStyle = "#2563eb";
+        [lm.upperPx, lm.lowerPx, lm.irisPx].forEach(p => { ctx.beginPath(); ctx.arc(p.x, p.y, r * 0.8, 0, Math.PI * 2); ctx.fill(); });
+        ctx.fillStyle = "#111827"; ctx.font = (canvas.width / 60) + "px sans-serif";
+        ctx.fillText("Oko " + key, lm.upperPx.x - 10, lm.upperPx.y - 12);
+      });
+    }
+  }, [calibPoints, landmarks]);
+
+  useEffect(() => { draw(); }, [draw, img]);
+
+  const handleCanvasClick = (e) => {
+    if (calibPoints.length >= 2) return;
+    const canvas = canvasRef.current, rect = canvas.getBoundingClientRect();
+    const scaleX = canvas.width / rect.width, scaleY = canvas.height / rect.height;
+    const x = (e.clientX - rect.left) * scaleX, y = (e.clientY - rect.top) * scaleY;
+    setCalibPoints(prev => [...prev, { x, y }]);
+  };
+
+  const unitToMm = (u) => (u && u.toLowerCase().startsWith("mm")) ? 1 : 10; // default cm
+
+  const computeCalibration = () => {
+    if (calibPoints.length !== 2 || calibLabels[0] === null || calibLabels[1] === null || !rulerLabels) return;
+    const l0 = rulerLabels[calibLabels[0]], l1 = rulerLabels[calibLabels[1]];
+    const v0 = parseFloat(l0.label) * unitToMm(l0.unit);
+    const v1 = parseFloat(l1.label) * unitToMm(l1.unit);
+    const realDistMm = Math.abs(v1 - v0);
+    const pxDist = Math.hypot(calibPoints[0].x - calibPoints[1].x, calibPoints[0].y - calibPoints[1].y);
+    if (pxDist === 0 || realDistMm === 0) return;
+    setMmPerPx(realDistMm / pxDist);
+  };
+
+  const runFaceDetection = async () => {
+    if (!img) return;
+    setFaceLoading(true); setFaceError(null);
+    try {
+      const vision = await import("https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.14/vision_bundle.mjs");
+      if (!faceLandmarkerRef.current) {
+        const filesetResolver = await vision.FilesetResolver.forVisionTasks("https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.14/wasm");
+        faceLandmarkerRef.current = await vision.FaceLandmarker.createFromOptions(filesetResolver, {
+          baseOptions: { modelAssetPath: "https://storage.googleapis.com/mediapipe-models/face_landmarker/face_landmarker/float16/1/face_landmarker.task", delegate: "CPU" },
+          runningMode: "IMAGE", numFaces: 1,
+        });
+      }
+      const imageEl = imgElRef.current;
+      const result = faceLandmarkerRef.current.detect(imageEl);
+      if (!result.faceLandmarks || result.faceLandmarks.length === 0) throw new Error("Lice/oko nije prepoznato na fotografiji");
+      const lm = result.faceLandmarks[0];
+      const w = imageEl.naturalWidth, h = imageEl.naturalHeight;
+      const toPx = (p) => ({ x: p.x * w, y: p.y * h });
+      const extract = (idxs) => ({ upperPx: toPx(lm[idxs.upper]), lowerPx: toPx(lm[idxs.lower]), irisPx: toPx(lm[idxs.iris]) });
+      setLandmarks({ A: extract(EYE_LM.A), B: extract(EYE_LM.B) });
+    } catch (err) {
+      setFaceError("Automatska detekcija nije uspela: " + err.message + ". Fotografišite bliže, sa oba oka jasno vidljiva i dobrim osvetljenjem.");
+    } finally { setFaceLoading(false); }
+  };
+
+  const computeResults = () => {
+    if (!landmarks || !mmPerPx) return;
+    const out = {};
+    ["A", "B"].forEach((key) => {
+      const side = assign[key]; // OD or OS
+      const lm = landmarks[key];
+      const fissure = Math.hypot(lm.upperPx.x - lm.lowerPx.x, lm.upperPx.y - lm.lowerPx.y) * mmPerPx;
+      const mrd1 = Math.hypot(lm.irisPx.x - lm.upperPx.x, lm.irisPx.y - lm.upperPx.y) * mmPerPx;
+      const mrd2 = Math.hypot(lm.irisPx.x - lm.lowerPx.x, lm.irisPx.y - lm.lowerPx.y) * mmPerPx;
+      out[side] = { fissure: fissure.toFixed(2), mrd1: mrd1.toFixed(2), mrd2: mrd2.toFixed(2) };
+    });
+    setResults(out);
+  };
+
+  const applyAll = () => {
+    if (!results) return;
+    ["OD", "OS"].forEach((side) => {
+      if (!results[side]) return;
+      onApply("fisura" + side, results[side].fissure);
+      onApply("mrd1" + side, results[side].mrd1);
+      onApply("mrd2" + side, results[side].mrd2);
+    });
+  };
+
+  return (
+    <div>
+      <div style={{ marginBottom: 12, padding: 10, background: "#fffbeb", border: "1px solid #fde68a", borderRadius: 8 }}>
+        <p style={{ fontSize: 12, color: "#92400e", marginBottom: 6 }}>Potreban je Anthropic API ključ za automatsko čitanje oznaka sa lenjira.</p>
+        <input type="password" placeholder="sk-ant-..." value={apiKey} onChange={e => saveKey(e.target.value)} />
+      </div>
+
+      <div className="section-title">1. Fotografija</div>
+      <input type="file" accept="image/*" capture="environment" onChange={handleFile} style={{ marginBottom: 10 }} />
+
+      {img && <>
+        <img ref={imgElRef} src={img} alt="" style={{ display: "none" }} onLoad={draw} />
+        <div style={{ border: "1px solid #e5e7eb", borderRadius: 8, overflow: "hidden", marginBottom: 10 }}>
+          <canvas ref={canvasRef} onClick={handleCanvasClick} style={{ width: "100%", cursor: "crosshair", display: "block" }} />
+        </div>
+
+        <div className="section-title">2. AI čita oznake na lenjiru</div>
+        <button onClick={readRuler} disabled={rulerLoading} style={{ padding: "8px 14px", borderRadius: 6, border: "none", background: rulerLoading ? "#e5e7eb" : "#2563eb", color: rulerLoading ? "#9ca3af" : "#fff", fontSize: 13, marginBottom: 10 }}>
+          {rulerLoading ? "Čitam lenjir..." : "Pročitaj oznake (AI)"}
+        </button>
+        {rulerError && <div style={{ background: "#fef2f2", border: "1px solid #fecaca", borderRadius: 8, padding: 10, fontSize: 12, color: "#991b1b", marginBottom: 10 }}>{rulerError}</div>}
+
+        {rulerLabels && (
+          <div style={{ marginBottom: 10 }}>
+            <p style={{ fontSize: 12, color: "#6b7280", marginBottom: 6 }}>Pronađene oznake: {rulerLabels.map(l => l.label + l.unit).join(", ")}. Kliknite dve tačke na lenjiru na fotografiji iznad, pa za svaku izaberite koju oznaku predstavlja:</p>
+            <div style={{ display: "flex", gap: 10, flexWrap: "wrap" }}>
+              {[0, 1].map(i => (
+                <div key={i} style={{ width: 160 }}>
+                  <Field label={"Klik " + (i + 1) + " = oznaka"}>
+                    <select value={calibLabels[i] ?? ""} onChange={e => { const next = [...calibLabels]; next[i] = e.target.value === "" ? null : parseInt(e.target.value, 10); setCalibLabels(next); }} disabled={calibPoints.length < i + 1}>
+                      <option value="">—</option>
+                      {rulerLabels.map((l, idx) => <option key={idx} value={idx}>{l.label}{l.unit}</option>)}
+                    </select>
+                  </Field>
+                </div>
+              ))}
+            </div>
+            <div style={{ display: "flex", gap: 8, marginTop: 6 }}>
+              <button onClick={() => { setCalibPoints([]); setCalibLabels([null, null]); setMmPerPx(null); }} style={{ padding: "6px 12px", borderRadius: 6, border: "1px solid #d1d5db", background: "#fff", fontSize: 12 }}>Resetuj klikove</button>
+              <button onClick={computeCalibration} disabled={calibPoints.length !== 2 || calibLabels[0] === null || calibLabels[1] === null} style={{ padding: "6px 12px", borderRadius: 6, border: "none", background: "#16a34a", color: "#fff", fontSize: 12 }}>Kalibriši</button>
+            </div>
+            {mmPerPx && <p style={{ fontSize: 12, color: "#166534", marginTop: 6 }}>Kalibrisano: {(1 / mmPerPx).toFixed(2)} px/mm</p>}
+          </div>
+        )}
+
+        <div className="section-title" style={{ marginTop: 16 }}>3. Automatska detekcija oka</div>
+        <button onClick={runFaceDetection} disabled={faceLoading} style={{ padding: "8px 14px", borderRadius: 6, border: "none", background: faceLoading ? "#e5e7eb" : "#2563eb", color: faceLoading ? "#9ca3af" : "#fff", fontSize: 13, marginBottom: 10 }}>
+          {faceLoading ? "Detektujem (može potrajati prvi put)..." : "Detektuj oči automatski"}
+        </button>
+        {faceError && <div style={{ background: "#fef2f2", border: "1px solid #fecaca", borderRadius: 8, padding: 10, fontSize: 12, color: "#991b1b", marginBottom: 10 }}>{faceError}</div>}
+
+        {landmarks && (
+          <div style={{ marginBottom: 10 }}>
+            <p style={{ fontSize: 12, color: "#6b7280", marginBottom: 6 }}>Potvrdite koje je oko koje (proverite na slici iznad — plave tačke označavaju "Oko A" i "Oko B"):</p>
+            <div style={{ display: "flex", gap: 16 }}>
+              {["A", "B"].map(key => (
+                <div key={key} style={{ width: 140 }}>
+                  <Field label={"Oko " + key + " je:"}>
+                    <select value={assign[key]} onChange={e => setAssign({ ...assign, [key]: e.target.value })}>
+                      <option value="OD">OD (desno)</option>
+                      <option value="OS">OS (levo)</option>
+                    </select>
+                  </Field>
+                </div>
+              ))}
+            </div>
+          </div>
+        )}
+
+        {landmarks && mmPerPx && (
+          <button onClick={computeResults} style={{ padding: "8px 14px", borderRadius: 6, border: "none", background: "#111827", color: "#fff", fontSize: 13, marginBottom: 12 }}>Izračunaj merenja</button>
+        )}
+
+        {results && (
+          <div style={{ background: "#f0fdf4", border: "1px solid #bbf7d0", borderRadius: 8, padding: 12 }}>
+            <p style={{ fontSize: 12, fontWeight: 600, color: "#166534", marginBottom: 8 }}>Izračunato — proverite pre unosa:</p>
+            {["OD", "OS"].map(side => results[side] && (
+              <div key={side} style={{ fontSize: 13, marginBottom: 4 }}>
+                <strong>{side}:</strong> fisura {results[side].fissure}mm · MRD1 {results[side].mrd1}mm · MRD2 {results[side].mrd2}mm
+              </div>
+            ))}
+            <p style={{ fontSize: 11, color: "#92400e", marginTop: 6 }}>MRD je aproksimacija preko geometrijskog centra irisa, ne pravog kornealnog refleksa — proverite vizuelno pre nego što uđe u karton.</p>
+            <button onClick={applyAll} style={{ marginTop: 8, padding: "6px 12px", borderRadius: 6, border: "none", background: "#16a34a", color: "#fff", fontSize: 12 }}>Unesi sve u aktivnu posetu</button>
+          </div>
+        )}
+      </>}
+    </div>
+  );
+}
+
 function LabPhotoTool({ onApply }) {
   const [img, setImg] = useState(null), [imgBase64, setImgBase64] = useState(null);
   const [loading, setLoading] = useState(false), [extracted, setExtracted] = useState(null), [error, setError] = useState(null);
   const [apiKey, setApiKey] = useState(localStorage.getItem(LS_APIKEY) || "");
-
   const saveKey = (val) => { setApiKey(val); localStorage.setItem(LS_APIKEY, val); };
-
   const handleFile = (e) => {
-    const f = e.target.files[0];
-    if (!f) return;
+    const f = e.target.files[0]; if (!f) return;
     const reader = new FileReader();
     reader.onload = (ev) => { setImg(ev.target.result); setImgBase64(ev.target.result.split(",")[1]); setExtracted(null); setError(null); };
     reader.readAsDataURL(f);
   };
-
   const extract = async () => {
     if (!imgBase64) return;
     if (!apiKey) { setError("Unesite Anthropic API ključ iznad pre čitanja nalaza."); return; }
@@ -245,22 +475,13 @@ function LabPhotoTool({ onApply }) {
     try {
       const response = await fetch("https://api.anthropic.com/v1/messages", {
         method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          "x-api-key": apiKey,
-          "anthropic-version": "2023-06-01",
-          "anthropic-dangerous-direct-browser-access": "true",
-        },
+        headers: { "Content-Type": "application/json", "x-api-key": apiKey, "anthropic-version": "2023-06-01", "anthropic-dangerous-direct-browser-access": "true" },
         body: JSON.stringify({
-          model: "claude-sonnet-4-6",
-          max_tokens: 1000,
-          messages: [{
-            role: "user",
-            content: [
-              { type: "image", source: { type: "base64", media_type: "image/jpeg", data: imgBase64 } },
-              { type: "text", text: "Ovo je fotografija laboratorijskog nalaza. Izvuci samo sledeće vrednosti ako su prisutne: TSH, FT4, FT3, TRAb, TPOAt (anti-TPO), TgAt (anti-Tg). Odgovori ISKLJUČIVO validnim JSON objektom bez dodatnog teksta: {\"TSH\":\"...\",\"FT4\":\"...\",\"FT3\":\"...\",\"TRAb\":\"...\",\"TPOAt\":\"...\",\"TgAt\":\"...\"}. Ako vrednost nije vidljiva, stavi null." }
-            ]
-          }]
+          model: "claude-sonnet-4-6", max_tokens: 1000,
+          messages: [{ role: "user", content: [
+            { type: "image", source: { type: "base64", media_type: "image/jpeg", data: imgBase64 } },
+            { type: "text", text: "Ovo je fotografija laboratorijskog nalaza. Izvuci samo sledeće vrednosti ako su prisutne: TSH, FT4, FT3, TRAb, TPOAt (anti-TPO), TgAt (anti-Tg). Odgovori ISKLJUČIVO validnim JSON objektom bez dodatnog teksta: {\"TSH\":\"...\",\"FT4\":\"...\",\"FT3\":\"...\",\"TRAb\":\"...\",\"TPOAt\":\"...\",\"TgAt\":\"...\"}. Ako vrednost nije vidljiva, stavi null." }
+          ] }]
         })
       });
       const data = await response.json();
@@ -269,11 +490,9 @@ function LabPhotoTool({ onApply }) {
       if (!textBlock) throw new Error("Nema odgovora");
       const parsed = JSON.parse(textBlock.text.replace(/```json|```/g, "").trim());
       setExtracted(parsed);
-    } catch (err) {
-      setError("Nije uspelo čitanje: " + err.message + ". Unesite ručno.");
-    } finally { setLoading(false); }
+    } catch (err) { setError("Nije uspelo čitanje: " + err.message + ". Unesite ručno."); }
+    finally { setLoading(false); }
   };
-
   return (
     <div>
       <div style={{ marginBottom: 12, padding: 10, background: "#fffbeb", border: "1px solid #fde68a", borderRadius: 8 }}>
@@ -309,13 +528,9 @@ function SettingsTab({ clientId, setClientId, account, onLogin, onLogout, syncSt
         Nalepite "Application (client) ID" dobijen registracijom aplikacije na portal.azure.com (App registrations).
         Podaci se čuvaju u posebnom App Folder-u vašeg OneDrive naloga, u fajlu <code>{ONEDRIVE_FILE}</code>.
       </p>
-      <Field label="Azure Client ID">
-        <input value={draft} onChange={e => setDraft(e.target.value)} placeholder="npr. 3f2c1a4b-..." />
-      </Field>
+      <Field label="Azure Client ID"><input value={draft} onChange={e => setDraft(e.target.value)} placeholder="npr. 3f2c1a4b-..." /></Field>
       <button onClick={() => setClientId(draft)} style={{ padding: "6px 12px", borderRadius: 6, border: "1px solid #d1d5db", background: "#fff", fontSize: 12, marginRight: 8 }}>Sačuvaj Client ID</button>
-      {clientId && !account && (
-        <button onClick={onLogin} style={{ padding: "8px 14px", borderRadius: 6, border: "none", background: "#2563eb", color: "#fff", fontSize: 13 }}>Poveži OneDrive nalog</button>
-      )}
+      {clientId && !account && <button onClick={onLogin} style={{ padding: "8px 14px", borderRadius: 6, border: "none", background: "#2563eb", color: "#fff", fontSize: 13 }}>Poveži OneDrive nalog</button>}
       {account && (
         <div style={{ display: "flex", alignItems: "center", gap: 10, marginTop: 8 }}>
           <span style={{ fontSize: 13, color: "#166534" }}>Povezano: {account.username}</span>
@@ -324,6 +539,8 @@ function SettingsTab({ clientId, setClientId, account, onLogin, onLogout, syncSt
       )}
       {syncStatus && <p style={{ fontSize: 12, color: "#6b7280", marginTop: 10 }}>{syncStatus}</p>}
       {!clientId && <p style={{ fontSize: 12, color: "#9ca3af", marginTop: 10 }}>Bez povezanog OneDrive naloga, podaci se čuvaju samo lokalno u ovom browseru.</p>}
+      <div className="section-title" style={{ marginTop: 24 }}>Dodavanje na Home Screen (iPhone)</div>
+      <p style={{ fontSize: 12, color: "#6b7280", lineHeight: 1.5 }}>U Safari-ju otvorite ovu stranicu → dugme za deljenje (kvadrat sa strelicom) → "Add to Home Screen". Ikonica će se ponašati kao prava aplikacija, bez Safari trake.</p>
     </div>
   );
 }
@@ -353,73 +570,45 @@ function App() {
       auth: { clientId, authority: "https://login.microsoftonline.com/consumers", redirectUri: window.location.href },
       cache: { cacheLocation: "localStorage" },
     });
-    instance._clientId = clientId;
-    msalRef.current = instance;
-    return instance;
+    instance._clientId = clientId; msalRef.current = instance; return instance;
   }, [clientId]);
 
   const getToken = useCallback(async () => {
-    const instance = getMsal();
-    if (!instance) return null;
-    const accounts = instance.getAllAccounts();
-    if (accounts.length === 0) return null;
-    try {
-      const res = await instance.acquireTokenSilent({ scopes: ["Files.ReadWrite.AppFolder"], account: accounts[0] });
-      return res.accessToken;
-    } catch (e) {
-      const res = await instance.acquireTokenPopup({ scopes: ["Files.ReadWrite.AppFolder"] });
-      return res.accessToken;
-    }
+    const instance = getMsal(); if (!instance) return null;
+    const accounts = instance.getAllAccounts(); if (accounts.length === 0) return null;
+    try { const res = await instance.acquireTokenSilent({ scopes: ["Files.ReadWrite.AppFolder"], account: accounts[0] }); return res.accessToken; }
+    catch (e) { const res = await instance.acquireTokenPopup({ scopes: ["Files.ReadWrite.AppFolder"] }); return res.accessToken; }
   }, [getMsal]);
 
   const onLogin = async () => {
-    const instance = getMsal();
-    if (!instance) return;
-    try {
-      const res = await instance.loginPopup({ scopes: ["Files.ReadWrite.AppFolder"] });
-      setAccount(res.account);
-      setSyncStatus("Povezano — učitavam podatke sa OneDrive...");
-      await loadFromOneDrive();
-    } catch (e) {
-      setSyncStatus("Greška pri prijavi: " + e.message);
-    }
+    const instance = getMsal(); if (!instance) return;
+    try { const res = await instance.loginPopup({ scopes: ["Files.ReadWrite.AppFolder"] }); setAccount(res.account); setSyncStatus("Povezano — učitavam podatke sa OneDrive..."); await loadFromOneDrive(); }
+    catch (e) { setSyncStatus("Greška pri prijavi: " + e.message); }
   };
   const onLogout = () => {
-    const instance = getMsal();
-    if (instance && account) instance.logoutPopup({ account });
-    setAccount(null);
-    setSyncStatus("Odjavljeno — podaci se dalje čuvaju samo lokalno.");
+    const instance = getMsal(); if (instance && account) instance.logoutPopup({ account });
+    setAccount(null); setSyncStatus("Odjavljeno — podaci se dalje čuvaju samo lokalno.");
   };
 
   const loadFromOneDrive = useCallback(async () => {
     try {
-      const token = await getToken();
-      if (!token) return;
+      const token = await getToken(); if (!token) return;
       const res = await fetch(GRAPH_ROOT + ":/content", { headers: { Authorization: "Bearer " + token } });
       if (res.status === 404) { setSyncStatus("Nema još podataka na OneDrive — prvi upis će ih kreirati."); return; }
       if (!res.ok) throw new Error("HTTP " + res.status);
       const data = await res.json();
       setPatients(data.patients || []); setVisits(data.visits || {}); setLabs(data.labs || {});
       setSyncStatus("Učitano sa OneDrive.");
-    } catch (e) {
-      setSyncStatus("Greška pri učitavanju sa OneDrive: " + e.message);
-    }
+    } catch (e) { setSyncStatus("Greška pri učitavanju sa OneDrive: " + e.message); }
   }, [getToken]);
 
   const saveToOneDrive = useCallback(async (payload) => {
     try {
-      const token = await getToken();
-      if (!token) return;
-      const res = await fetch(GRAPH_ROOT + ":/content", {
-        method: "PUT",
-        headers: { Authorization: "Bearer " + token, "Content-Type": "application/json" },
-        body: JSON.stringify(payload),
-      });
+      const token = await getToken(); if (!token) return;
+      const res = await fetch(GRAPH_ROOT + ":/content", { method: "PUT", headers: { Authorization: "Bearer " + token, "Content-Type": "application/json" }, body: JSON.stringify(payload) });
       if (!res.ok) throw new Error("HTTP " + res.status);
       setSyncStatus("Sinhronizovano sa OneDrive.");
-    } catch (e) {
-      setSyncStatus("Greška pri čuvanju na OneDrive: " + e.message);
-    }
+    } catch (e) { setSyncStatus("Greška pri čuvanju na OneDrive: " + e.message); }
   }, [getToken]);
 
   useEffect(() => {
@@ -427,11 +616,7 @@ function App() {
       const raw = localStorage.getItem(LS_KEY);
       if (raw) { const parsed = JSON.parse(raw); setPatients(parsed.patients || []); setVisits(parsed.visits || {}); setLabs(parsed.labs || {}); }
     } catch (e) {}
-    if (clientId) {
-      const instance = getMsal();
-      const accs = instance ? instance.getAllAccounts() : [];
-      if (accs.length > 0) { setAccount(accs[0]); loadFromOneDrive(); }
-    }
+    if (clientId) { const instance = getMsal(); const accs = instance ? instance.getAllAccounts() : []; if (accs.length > 0) { setAccount(accs[0]); loadFromOneDrive(); } }
     setLoaded(true);
     // eslint-disable-next-line
   }, []);
@@ -440,10 +625,8 @@ function App() {
     if (!loaded) return;
     const payload = { patients, visits, labs };
     localStorage.setItem(LS_KEY, JSON.stringify(payload));
-    setSaveStatus("Sačuvano lokalno");
-    const t = setTimeout(() => setSaveStatus(""), 1200);
-    let t2;
-    if (account) t2 = setTimeout(() => saveToOneDrive(payload), 800);
+    setSaveStatus("Sačuvano lokalno"); const t = setTimeout(() => setSaveStatus(""), 1200);
+    let t2; if (account) t2 = setTimeout(() => saveToOneDrive(payload), 800);
     return () => { clearTimeout(t); if (t2) clearTimeout(t2); };
   }, [patients, visits, labs, loaded]);
 
@@ -480,7 +663,7 @@ function App() {
 
   const tabs = [
     { k: "patients", l: "Pacijenti" }, { k: "visit", l: "Poseta" }, { k: "trend", l: "Trend" },
-    { k: "photo", l: "Merenje sa fotografije" }, { k: "lab", l: "Lab nalaz" }, { k: "settings", l: "Podešavanja" },
+    { k: "photo", l: "Ručno merenje" }, { k: "automeasure", l: "Auto merenje" }, { k: "lab", l: "Lab nalaz" }, { k: "settings", l: "Podešavanja" },
   ];
 
   return (
@@ -500,9 +683,7 @@ function App() {
         </div>
       )}
 
-      {tab === "settings" && (
-        <SettingsTab clientId={clientId} setClientId={setClientId} account={account} onLogin={onLogin} onLogout={onLogout} syncStatus={syncStatus} />
-      )}
+      {tab === "settings" && <SettingsTab clientId={clientId} setClientId={setClientId} account={account} onLogin={onLogin} onLogout={onLogout} syncStatus={syncStatus} />}
 
       {tab === "patients" && (
         <div>
@@ -559,6 +740,8 @@ function App() {
                 <Field label="MRD2 OS"><input value={visitDraft.mrd2OS} onChange={e => setVisitDraft({ ...visitDraft, mrd2OS: e.target.value })} /></Field>
                 <Field label="Lagoftalmus OD"><input value={visitDraft.lagoftalmusOD} onChange={e => setVisitDraft({ ...visitDraft, lagoftalmusOD: e.target.value })} /></Field>
                 <Field label="Lagoftalmus OS"><input value={visitDraft.lagoftalmusOS} onChange={e => setVisitDraft({ ...visitDraft, lagoftalmusOS: e.target.value })} /></Field>
+                <Field label="Fisura OD (mm)"><input value={visitDraft.fisuraOD} onChange={e => setVisitDraft({ ...visitDraft, fisuraOD: e.target.value })} /></Field>
+                <Field label="Fisura OS (mm)"><input value={visitDraft.fisuraOS} onChange={e => setVisitDraft({ ...visitDraft, fisuraOS: e.target.value })} /></Field>
               </div>
             </div>
             <div>
@@ -632,6 +815,7 @@ function App() {
 
       {tab === "trend" && selectedPatient && <TrendSVG data={trendData} />}
       {tab === "photo" && selectedPatient && <PhotoMeasureTool onApply={applyMeasurement} />}
+      {tab === "automeasure" && selectedPatient && <AutoMeasureTool onApply={applyMeasurement} />}
       {tab === "lab" && selectedPatient && (
         <div>
           <LabPhotoTool onApply={applyLab} />
