@@ -38,7 +38,7 @@ const { useState, useEffect, useRef, useCallback } = React;
 const uid = () => Math.random().toString(36).slice(2, 10);
 const LS_KEY = "ted-tracker-data-v1";
 const LS_APIKEY = "ted-tracker-gemini-key";
-const GEMINI_URL = "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent";
+const GEMINI_URL = "https://generativelanguage.googleapis.com/v1beta/models/gemini-flash-latest:generateContent";
 const LS_CLIENTID = "ted-tracker-onedrive-clientid";
 const ONEDRIVE_FILE = "ted-tracker-data.json";
 const GRAPH_ROOT = "https://graph.microsoft.com/v1.0/me/drive/special/approot:/" + ONEDRIVE_FILE;
